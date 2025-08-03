@@ -545,7 +545,7 @@ public class FileRepositoryImpl extends AbstractSqlRepository implements FileRep
                     if (record == null) {
                         return Future.succeededFuture(null);
                     }
-                    boolean pathUpdated = !Objects.equals(record.localPath(), localPath);
+                    boolean pathUpdated = StrUtil.isNotBlank(localPath) && !Objects.equals(record.localPath(), localPath);
                     boolean downloadStatusUpdated = !record.isDownloadStatus(downloadStatus);
                     if (!pathUpdated && !downloadStatusUpdated) {
                         return Future.succeededFuture(null);

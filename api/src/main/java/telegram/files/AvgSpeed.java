@@ -1,15 +1,16 @@
 package telegram.files;
 
 import java.util.ArrayList;
+import java.util.concurrent.ConcurrentNavigableMap;
+import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.List;
 import java.util.Map;
-import java.util.TreeMap;
 import java.util.stream.Collectors;
 
 public class AvgSpeed {
     private final int interval;
 
-    private final TreeMap<Long, SpeedPoint> speedPoints;
+    private final ConcurrentNavigableMap<Long, SpeedPoint> speedPoints;
 
     private final int smoothingWindowSize;
 
@@ -29,7 +30,7 @@ public class AvgSpeed {
 
     public AvgSpeed(int interval, int smoothingWindowSize) {
         this.interval = interval;
-        this.speedPoints = new TreeMap<>();
+        this.speedPoints = new ConcurrentSkipListMap<>();
         this.smoothingWindowSize = smoothingWindowSize;
     }
 
