@@ -800,25 +800,27 @@ public class TelegramVerticle extends AbstractVerticle {
             String finalLocalPath = localPath;
             Long finalCompletionDate = completionDate;
             DataVerticle.fileRepository.getByUniqueId(file.remote.uniqueId)
-                    .onSuccess(fileRecord -> {
+                    .compose(fileRecord -> {
                         FileRecord.DownloadStatus downloadStatus = TdApiHelp.getDownloadStatus(file);
 
                         if (fileRecord != null) {
                             if (fileRecord.isDownloadStatus(FileRecord.DownloadStatus.completed) &&
-                                fileRecord.isTransferStatus(FileRecord.TransferStatus.completed) &&
-                                FileUtil.exist(fileRecord.localPath())) {
-                                return;
+                                    fileRecord.isTransferStatus(FileRecord.TransferStatus.completed) &&
+                                    FileUtil.exist(fileRecord.localPath())) {
+                                return Future.succeededFuture(null);
                             }
                             if (downloadStatus == null) {
                                 downloadStatus = FileRecord.DownloadStatus.idle;
                             }
-                            DataVerticle.fileRepository.updateDownloadStatus(file.id,
-                                            file.remote.uniqueId,
-                                            finalLocalPath,
-                                            downloadStatus,
-                                            finalCompletionDate)
-                                    .onSuccess(r -> sendFileStatusHttpEvent(file, r));
+                            return DataVerticle.fileRepository.updateDownloadStatus(file.id,
+                                    file.remote.uniqueId,
+                                    finalLocalPath,
+                                    downloadStatus,
+                                    finalCompletionDate);
                         }
+                        return Future.succeededFuture(null);
+                    }).onSuccess(updated -> {
+                        sendFileStatusHttpEvent(file, updated);
                     });
 
             if (completionDate != null || lastFileEventTime == 0 || System.currentTimeMillis() - lastFileEventTime > 1000) {

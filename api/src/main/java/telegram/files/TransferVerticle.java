@@ -136,12 +136,19 @@ public class TransferVerticle extends AbstractVerticle {
             if (transfer == null) {
                 continue;
             }
-            Tuple3<List<FileRecord>, Long, Long> filesTuple = Future.await(DataVerticle.fileRepository.getFiles(automation.chatId,
+            Tuple3<List<FileRecord>, Long, Long> idleFilesTuple = Future.await(DataVerticle.fileRepository.getFiles(automation.chatId,
                     Map.of("status", FileRecord.DownloadStatus.completed.name(),
                             "transferStatus", FileRecord.TransferStatus.idle.name()
                     )
             ));
-            List<FileRecord> files = filesTuple.v1;
+            List<FileRecord> files = new java.util.ArrayList<>(idleFilesTuple.v1);
+
+            Tuple3<List<FileRecord>, Long, Long> errorFilesTuple = Future.await(DataVerticle.fileRepository.getFiles(automation.chatId,
+                    Map.of("status", FileRecord.DownloadStatus.completed.name(),
+                            "transferStatus", FileRecord.TransferStatus.error.name()
+                    )
+            ));
+            files.addAll(errorFilesTuple.v1);
             if (CollUtil.isEmpty(files)) {
                 log.debug("No history files found for transfer: %s".formatted(automation.uniqueKey()));
                 automation.complete(SettingAutoRecords.HISTORY_TRANSFER_STATE);
@@ -240,8 +247,20 @@ public class TransferVerticle extends AbstractVerticle {
             return;
         }
         if (fileRecord.transferStatus() != null
-            && !fileRecord.isTransferStatus(FileRecord.TransferStatus.idle)) {
-            log.debug("File {} transfer status is not idle: {}", fileRecord.id(), fileRecord.transferStatus());
+                && !fileRecord.isTransferStatus(FileRecord.TransferStatus.idle)
+                && !fileRecord.isTransferStatus(FileRecord.TransferStatus.error)) {
+            log.info("File {} transfer status is not idle or error: {}", fileRecord.id(), fileRecord.transferStatus());
+            return;
+        }
+
+        if (fileRecord.isTransferStatus(FileRecord.TransferStatus.error) && fileRecord.completionDate() != null && fileRecord.completionDate() > System.currentTimeMillis() - 1 * 60 * 1000) {
+            log.debug("File {} is in error status, but not long enough to retry", fileRecord.id());
+            return;
+        }
+
+        if (StrUtil.isBlank(fileRecord.localPath())) {
+            log.error("File {} has completed download status but missing local path. Unique ID: {}", fileRecord.id(), fileRecord.uniqueId());
+            updateTransferStatus(fileRecord, FileRecord.TransferStatus.error, null);
             return;
         }
 
