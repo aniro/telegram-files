@@ -22,9 +22,9 @@ import java.util.concurrent.TimeUnit;
 public class TransferVerticle extends AbstractVerticle {
     private static final Log log = LogFactory.get();
 
-    private static final int HISTORY_SCAN_INTERVAL = 2 * 60 * 1000;
+    private static final int HISTORY_SCAN_INTERVAL = 1 * 60 * 1000;
 
-    private static final int TRANSFER_INTERVAL = 3 * 1000;
+    private static final int TRANSFER_INTERVAL = 1 * 1000;
 
     private final SettingAutoRecords autoRecords;
 
@@ -90,21 +90,21 @@ public class TransferVerticle extends AbstractVerticle {
             if (payload.data() != null && payload.data() instanceof Map<?, ?> data && StrUtil.isNotBlank((String) data.get("downloadStatus"))) {
                 FileRecord.DownloadStatus downloadStatus = FileRecord.DownloadStatus.valueOf((String) data.get("downloadStatus"));
                 if (downloadStatus != FileRecord.DownloadStatus.completed) {
-                    return;
+return;
                 }
                 FileRecord fileRecord = Future.await(DataVerticle.fileRepository.getByUniqueId((String) data.get("uniqueId")));
 
                 SettingAutoRecords.Automation automation = null;
-                if (fileRecord.threadChatId() != 0 && fileRecord.messageThreadId() != 0 && fileRecord.threadChatId() == fileRecord.chatId()) {
-                    // thread message file,try to get the main message
+                            if (fileRecord.threadChatId() != 0 && fileRecord.messageThreadId() != 0 && fileRecord.threadChatId() == fileRecord.chatId()) {
+                                // thread message file,try to get the main message
                     FileRecord mainFileRecord = Future.await(DataVerticle.fileRepository.getMainFileByThread(
-                            fileRecord.telegramId(),
-                            fileRecord.threadChatId(),
-                            fileRecord.messageThreadId()));
+                                    fileRecord.telegramId(),
+                                    fileRecord.threadChatId(),
+                                    fileRecord.messageThreadId()));
                     if (mainFileRecord != null) {
                         automation = autoRecords.getItem(mainFileRecord.telegramId(), mainFileRecord.chatId());
-                    }
-                } else {
+                                }
+                                            } else {
                     automation = autoRecords.getItem(fileRecord.telegramId(), fileRecord.chatId());
                 }
 
@@ -117,7 +117,6 @@ public class TransferVerticle extends AbstractVerticle {
                 }
             }
         });
-
         return Future.succeededFuture();
     }
 
@@ -130,10 +129,16 @@ public class TransferVerticle extends AbstractVerticle {
             if (!automation.transfer.enabled
                 || !automation.transfer.rule.transferHistory
                 || automation.isComplete(SettingAutoRecords.HISTORY_TRANSFER_STATE)) {
+                log.debug("Skip transfer for automation: {}, enabled: {}, transferHistory: {}, isComplete: {}",
+                        automation.uniqueKey(),
+                        automation.transfer.enabled,
+                        automation.transfer.rule.transferHistory,
+                        automation.isComplete(SettingAutoRecords.HISTORY_TRANSFER_STATE));
                 continue;
             }
             Transfer transfer = getTransfer(automation);
             if (transfer == null) {
+                log.debug("Skip transfer for automation: {}, transfer is null", automation.uniqueKey());
                 continue;
             }
             Tuple3<List<FileRecord>, Long, Long> idleFilesTuple = Future.await(DataVerticle.fileRepository.getFiles(automation.chatId,
@@ -255,6 +260,12 @@ public class TransferVerticle extends AbstractVerticle {
 
         if (fileRecord.isTransferStatus(FileRecord.TransferStatus.error) && fileRecord.completionDate() != null && fileRecord.completionDate() > System.currentTimeMillis() - 1 * 60 * 1000) {
             log.debug("File {} is in error status, but not long enough to retry", fileRecord.id());
+            return;
+        }
+
+        if (!fileRecord.isDownloadStatus(FileRecord.DownloadStatus.completed)) {
+            log.error("File {} is not downloaded yet, but was added to the transfer queue. Status: {}", fileRecord.id(), fileRecord.downloadStatus());
+            updateTransferStatus(fileRecord, FileRecord.TransferStatus.error, null);
             return;
         }
 

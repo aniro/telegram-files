@@ -48,13 +48,13 @@ WORKDIR /app
 
 ARG TARGETARCH
 ENV JAVA_HOME=/jre \
-    PATH="/jre/bin:$PATH" \
+    PATH="/jre/bin:/jdk/bin:$PATH" \
     LANG=C.UTF-8 \
     NGINX_PORT=80
 
 RUN addgroup -S tf && \
     adduser -S -G tf tf && \
-    apk add --no-cache nginx wget curl unzip tini su-exec gettext openssl libstdc++ gcompat libc6-compat && \
+    apk add --no-cache nginx wget curl unzip tini su-exec gettext openssl libstdc++ gcompat libc6-compat atop strace lsof && \
     rm -rf /tmp/* /var/tmp/* && \
     touch /run/nginx.pid && \
     chown -R tf:tf /app /etc/nginx /var/lib/nginx /var/log/nginx /run/nginx.pid && \
@@ -62,6 +62,7 @@ RUN addgroup -S tf && \
     chmod +x /usr/bin/tfm
 
 COPY --from=runtime-builder --chown=tf:tf /custom-jre/jre /jre
+COPY --from=runtime-builder --chown=tf:tf /opt/java/openjdk /jdk
 COPY --from=api-builder --chown=tf:tf /app/api.jar /app/api.jar
 COPY --from=web-builder --chown=tf:tf /web/out /app/web/
 

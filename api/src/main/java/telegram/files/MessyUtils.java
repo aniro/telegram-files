@@ -104,28 +104,28 @@ public class MessyUtils {
         }
 
         /**
-         * 开启某个状态
+         * Enable a certain state
          */
         public void enableState(int n) {
             state |= (1 << n);
         }
 
         /**
-         * 关闭某个状态
+         * Disable a certain state
          */
         public void disableState(int n) {
             state &= ~(1 << n);
         }
 
         /**
-         * 切换某个状态（开启->关闭，关闭->开启）
+         * Toggle a certain state (on->off, off->on)
          */
         public void toggleState(int n) {
             state ^= (1 << n);
         }
 
         /**
-         * 检查某个状态是否开启
+         * Check if a certain state is enabled
          */
         public boolean isStateEnabled(int n) {
             return (state & (1 << n)) != 0;
@@ -136,7 +136,7 @@ public class MessyUtils {
         }
 
         /**
-         * 获取当前状态的二进制表示
+         * Get the binary representation of the current state
          */
         public String getBinaryState() {
             return String.format("%8s", Integer.toBinaryString(state)).replace(' ', '0');
