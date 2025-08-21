@@ -26,6 +26,8 @@ public class TransferVerticle extends AbstractVerticle {
 
     private static final int TRANSFER_INTERVAL = 1 * 1000;
 
+    private static final int HISTORY_RESET_INTERVAL = 1 * 60 * 60 * 1000; // 1 hour
+
     private final SettingAutoRecords autoRecords;
 
     private final Map<String, Transfer> transfers = new HashMap<>();
@@ -34,7 +36,7 @@ public class TransferVerticle extends AbstractVerticle {
 
     private volatile boolean isStopped = false;
 
-    private volatile Transfer beingTransferred;
+    private volatile Transfer beingTransferred = null;
 
     public TransferVerticle() {
         this.autoRecords = AutomationsHolder.INSTANCE.autoRecords();
@@ -49,13 +51,15 @@ public class TransferVerticle extends AbstractVerticle {
         initEventConsumer().onSuccess(v -> {
             vertx.setPeriodic(0, HISTORY_SCAN_INTERVAL, id -> addHistoryFiles());
             vertx.setPeriodic(0, TRANSFER_INTERVAL, id -> startTransfer());
+            vertx.setPeriodic(0, HISTORY_RESET_INTERVAL, id -> resetHistoryTransferState());
 
             log.info("""
                     Transfer verticle started!
                     |History scan interval: %s ms
                     |Transfer interval: %s ms
+                    |History reset interval: %s ms
                     |Auto chats: %s
-                    """.formatted(HISTORY_SCAN_INTERVAL, TRANSFER_INTERVAL, autoRecords.getTransferEnabledItems().size()));
+                    """.formatted(HISTORY_SCAN_INTERVAL, TRANSFER_INTERVAL, HISTORY_RESET_INTERVAL, autoRecords.getTransferEnabledItems().size()));
 
             startPromise.complete();
         }).onFailure(startPromise::fail);
@@ -90,21 +94,21 @@ public class TransferVerticle extends AbstractVerticle {
             if (payload.data() != null && payload.data() instanceof Map<?, ?> data && StrUtil.isNotBlank((String) data.get("downloadStatus"))) {
                 FileRecord.DownloadStatus downloadStatus = FileRecord.DownloadStatus.valueOf((String) data.get("downloadStatus"));
                 if (downloadStatus != FileRecord.DownloadStatus.completed) {
-return;
+                    return;
                 }
                 FileRecord fileRecord = Future.await(DataVerticle.fileRepository.getByUniqueId((String) data.get("uniqueId")));
 
                 SettingAutoRecords.Automation automation = null;
-                            if (fileRecord.threadChatId() != 0 && fileRecord.messageThreadId() != 0 && fileRecord.threadChatId() == fileRecord.chatId()) {
-                                // thread message file,try to get the main message
+                if (fileRecord.threadChatId() != 0 && fileRecord.messageThreadId() != 0 && fileRecord.threadChatId() == fileRecord.chatId()) {
+                    // thread message file,try to get the main message
                     FileRecord mainFileRecord = Future.await(DataVerticle.fileRepository.getMainFileByThread(
-                                    fileRecord.telegramId(),
-                                    fileRecord.threadChatId(),
-                                    fileRecord.messageThreadId()));
+                            fileRecord.telegramId(),
+                            fileRecord.threadChatId(),
+                            fileRecord.messageThreadId()));
                     if (mainFileRecord != null) {
                         automation = autoRecords.getItem(mainFileRecord.telegramId(), mainFileRecord.chatId());
-                                }
-                                            } else {
+                    }
+                } else {
                     automation = autoRecords.getItem(fileRecord.telegramId(), fileRecord.chatId());
                 }
 
@@ -295,6 +299,16 @@ return;
                         );
                     }
                 }));
+    }
+
+    private void resetHistoryTransferState() {
+        if (CollUtil.isEmpty(autoRecords.automations)) {
+            return;
+        }
+        log.info("Resetting HISTORY_TRANSFER_STATE for all automations");
+        for (SettingAutoRecords.Automation automation : autoRecords.automations) {
+            automation.reset(SettingAutoRecords.HISTORY_TRANSFER_STATE);
+        }
     }
 
     private record WaitingTransferFile(long telegramId, long chatId, String uniqueId) {

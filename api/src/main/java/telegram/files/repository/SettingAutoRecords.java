@@ -55,6 +55,15 @@ public class SettingAutoRecords {
         public boolean isNotComplete(int bitwise) {
             return !isComplete(bitwise);
         }
+
+        @JsonIgnore
+        public void reset(int bitwise) {
+            // Convert the bitwise value (e.g., 1, 2, 4, 8) to its bit position (0, 1, 2, 3)
+            int bitPosition = (int) (Math.log(bitwise) / Math.log(2));
+            MessyUtils.BitState bitState = new MessyUtils.BitState(state);
+            bitState.disableState(bitPosition);
+            state = bitState.getState();
+        }
     }
 
     public static class PreloadConfig {
