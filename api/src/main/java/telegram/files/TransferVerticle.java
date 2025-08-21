@@ -146,14 +146,14 @@ public class TransferVerticle extends AbstractVerticle {
                 continue;
             }
             Tuple3<List<FileRecord>, Long, Long> idleFilesTuple = Future.await(DataVerticle.fileRepository.getFiles(automation.chatId,
-                    Map.of("status", FileRecord.DownloadStatus.completed.name(),
+                    Map.of("downloadStatus", FileRecord.DownloadStatus.completed.name(),
                             "transferStatus", FileRecord.TransferStatus.idle.name()
                     )
             ));
             List<FileRecord> files = new java.util.ArrayList<>(idleFilesTuple.v1);
 
             Tuple3<List<FileRecord>, Long, Long> errorFilesTuple = Future.await(DataVerticle.fileRepository.getFiles(automation.chatId,
-                    Map.of("status", FileRecord.DownloadStatus.completed.name(),
+                    Map.of("downloadStatus", FileRecord.DownloadStatus.completed.name(),
                             "transferStatus", FileRecord.TransferStatus.error.name()
                     )
             ));
