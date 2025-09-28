@@ -26,7 +26,7 @@ public class TransferVerticle extends AbstractVerticle {
 
     private static final int TRANSFER_INTERVAL = 1 * 1000;
 
-    private static final int HISTORY_RESET_INTERVAL = 1 * 60 * 60 * 1000; // 1 hour
+    private static final int HISTORY_RESET_INTERVAL = 12 * 60 * 60 * 1000; // 1 hour
 
     private final SettingAutoRecords autoRecords;
 
@@ -241,6 +241,16 @@ public class TransferVerticle extends AbstractVerticle {
                 return;
             }
 
+            if (!fileRecord.isDownloadStatus(FileRecord.DownloadStatus.completed)) {
+                log.error("File {} is not downloaded yet to start transfer. Download Status: {}", fileRecord.id(), fileRecord.downloadStatus());
+                return;
+            }
+
+            if (StrUtil.isBlank(fileRecord.localPath())) {
+                log.error("File {} has completed download status but missing local path. Unique ID: {}", fileRecord.id(), fileRecord.uniqueId());
+                return;
+            }
+
             startTransfer(fileRecord, transfer);
         } catch (Exception e) {
             if (e instanceof InterruptedException) {
@@ -269,13 +279,13 @@ public class TransferVerticle extends AbstractVerticle {
 
         if (!fileRecord.isDownloadStatus(FileRecord.DownloadStatus.completed)) {
             log.error("File {} is not downloaded yet, but was added to the transfer queue. Status: {}", fileRecord.id(), fileRecord.downloadStatus());
-            updateTransferStatus(fileRecord, FileRecord.TransferStatus.error, null);
+            // updateTransferStatus(fileRecord, FileRecord.TransferStatus.error, null);
             return;
         }
 
         if (StrUtil.isBlank(fileRecord.localPath())) {
             log.error("File {} has completed download status but missing local path. Unique ID: {}", fileRecord.id(), fileRecord.uniqueId());
-            updateTransferStatus(fileRecord, FileRecord.TransferStatus.error, null);
+            // updateTransferStatus(fileRecord, FileRecord.TransferStatus.error, null);
             return;
         }
 
