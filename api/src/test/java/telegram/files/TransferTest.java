@@ -1,16 +1,5 @@
 package telegram.files;
 
-import cn.hutool.core.io.FileUtil;
-import io.vertx.core.json.JsonObject;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
-import org.junit.jupiter.api.io.TempDir;
-import telegram.files.Transfer.DuplicationPolicy;
-import telegram.files.Transfer.TransferPolicy;
-import telegram.files.repository.FileRecord;
-import telegram.files.repository.SettingAutoRecords;
-
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -18,9 +7,28 @@ import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.function.Consumer;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.junit.jupiter.api.io.TempDir;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import cn.hutool.core.io.FileUtil;
+import io.vertx.core.json.JsonObject;
+import telegram.files.Transfer.DuplicationPolicy;
+import telegram.files.Transfer.TransferPolicy;
+import telegram.files.repository.FileRecord;
+import telegram.files.repository.SettingAutoRecords;
 
 class TransferTest {
     private Transfer transfer;
@@ -80,6 +88,20 @@ class TransferTest {
 
         assertEquals(tempDir.resolve("-100123").resolve("2026").resolve("09")
                 .resolve("08").resolve("photo.jpg").toString(), path);
+    }
+
+    @Test
+    void testCaptionNameSanitizesUnicodeAndLineBreaks(@TempDir Path tempDir) {
+        SettingAutoRecords.TransferRule transferRule = new SettingAutoRecords.TransferRule();
+        transferRule.destination = tempDir.toString();
+        transferRule.transferPolicy = TransferPolicy.DIRECT;
+        transferRule.useCaptionName = true;
+        when(mockFileRecord.localPath()).thenReturn(tempDir.resolve("video.mp4").toString());
+        when(mockFileRecord.caption()).thenReturn("Видос от #cappulait\n\n😳 Наши каналы | ФУЛЛ 👈");
+
+        String path = Transfer.create(transferRule).previewPath(mockFileRecord);
+
+        assertEquals(tempDir.resolve("video_Видос от #cappulait 😳 Наши каналы ФУЛЛ 👈.mp4").toString(), path);
     }
 
     @Test
