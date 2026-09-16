@@ -1,24 +1,8 @@
 package telegram.files;
 
-import cn.hutool.core.convert.Convert;
-import cn.hutool.core.io.FileUtil;
-import cn.hutool.core.text.StrFormatter;
-import cn.hutool.core.util.StrUtil;
-import cn.hutool.log.Log;
-import cn.hutool.log.LogFactory;
-import com.fasterxml.jackson.annotation.JsonClassDescription;
-import com.fasterxml.jackson.annotation.JsonProperty;
-import com.fasterxml.jackson.annotation.JsonPropertyDescription;
-import com.openai.client.OpenAIClient;
-import com.openai.client.okhttp.OpenAIOkHttpClient;
-import com.openai.models.chat.completions.ChatCompletionCreateParams;
-import com.openai.models.chat.completions.StructuredChatCompletionCreateParams;
-import io.vertx.core.json.JsonObject;
-import telegram.files.repository.FileRecord;
-import telegram.files.repository.SettingAutoRecords;
-
 import java.io.File;
 import java.nio.file.Path;
+import java.text.Normalizer;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
@@ -29,6 +13,24 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
+
+import com.fasterxml.jackson.annotation.JsonClassDescription;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonPropertyDescription;
+import com.openai.client.OpenAIClient;
+import com.openai.client.okhttp.OpenAIOkHttpClient;
+import com.openai.models.chat.completions.ChatCompletionCreateParams;
+import com.openai.models.chat.completions.StructuredChatCompletionCreateParams;
+
+import cn.hutool.core.convert.Convert;
+import cn.hutool.core.io.FileUtil;
+import cn.hutool.core.text.StrFormatter;
+import cn.hutool.core.util.StrUtil;
+import cn.hutool.log.Log;
+import cn.hutool.log.LogFactory;
+import io.vertx.core.json.JsonObject;
+import telegram.files.repository.FileRecord;
+import telegram.files.repository.SettingAutoRecords;
 
 public abstract class Transfer {
 
@@ -57,9 +59,14 @@ public abstract class Transfer {
     // Keep the whole file name under common filesystem limits (~255), with margin for multibyte chars.
     private static final int MAX_FILENAME_LENGTH = 200;
 
-    private static final Pattern ILLEGAL_FILENAME_CHARS = Pattern.compile("[\\\\/:*?\"<>|\\r\\n\\t]");
+    private static final Pattern ILLEGAL_FILENAME_CHARS = Pattern.compile("[\\\\/:*?\"<>|\\p{Cntrl}]");
 
     private static final Pattern WHITESPACE = Pattern.compile("\\s+");
+
+    private static final Pattern TRAILING_DOTS_AND_SPACES = Pattern.compile("[. ]+$");
+
+    private static final Pattern WINDOWS_RESERVED_NAME = Pattern.compile(
+            "(?i)^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\\..*)?$");
 
     public Transfer(SettingAutoRecords.TransferRule transferRule) {
         this.destination = transferRule.destination;
@@ -226,8 +233,8 @@ public abstract class Transfer {
         // Cap the whole file name (preserving the extension) so a long original name plus the
         // caption can't exceed common filesystem limits.
         int maxStem = MAX_FILENAME_LENGTH - suffix.length();
-        if (maxStem > 0 && stem.length() > maxStem) {
-            stem = stem.substring(0, maxStem).trim();
+        if (maxStem > 0 && stem.codePointCount(0, stem.length()) > maxStem) {
+            stem = stem.substring(0, stem.offsetByCodePoints(0, maxStem)).trim();
         }
         return stem + suffix;
     }
@@ -236,14 +243,23 @@ public abstract class Transfer {
         if (text == null) {
             return "";
         }
-        // Replace characters that are illegal/problematic in file names and collapse whitespace.
-        String sanitized = WHITESPACE.matcher(ILLEGAL_FILENAME_CHARS.matcher(text).replaceAll(" "))
+        // Normalize equivalent Unicode forms, replace illegal characters, and collapse whitespace.
+        String sanitized = WHITESPACE.matcher(ILLEGAL_FILENAME_CHARS.matcher(Normalizer.normalize(text, Normalizer.Form.NFC)).replaceAll(" "))
                 .replaceAll(" ")
                 .trim();
-        if (sanitized.length() > MAX_CAPTION_NAME_LENGTH) {
-            sanitized = sanitized.substring(0, MAX_CAPTION_NAME_LENGTH).trim();
+        sanitized = TRAILING_DOTS_AND_SPACES.matcher(sanitized).replaceAll("");
+        if (sanitized.equals(".") || sanitized.equals("..")) {
+            return "";
         }
-        return sanitized;
+        if (WINDOWS_RESERVED_NAME.matcher(sanitized).matches()) {
+            sanitized = "_" + sanitized;
+        }
+        int codePointCount = sanitized.codePointCount(0, sanitized.length());
+        if (codePointCount > MAX_CAPTION_NAME_LENGTH) {
+            sanitized = sanitized.substring(0,
+                    sanitized.offsetByCodePoints(0, MAX_CAPTION_NAME_LENGTH)).trim();
+        }
+        return TRAILING_DOTS_AND_SPACES.matcher(sanitized).replaceAll("");
     }
 
     public FileRecord getTransferRecord() {
