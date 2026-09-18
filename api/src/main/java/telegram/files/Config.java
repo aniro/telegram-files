@@ -1,21 +1,5 @@
 package telegram.files;
 
-import cn.hutool.core.convert.Convert;
-import cn.hutool.core.io.FileUtil;
-import cn.hutool.core.util.ArrayUtil;
-import cn.hutool.core.util.StrUtil;
-import cn.hutool.log.Log;
-import cn.hutool.log.LogFactory;
-import cn.hutool.log.dialect.jdk.JdkLog;
-import com.openai.models.ChatModel;
-import io.vertx.core.DeploymentOptions;
-import io.vertx.core.ThreadingModel;
-import telegram.files.share.ShareConfiguration;
-import telegram.files.share.TorrentConfiguration;
-import telegram.files.share.security.AesGcmSecretStore;
-import telegram.files.share.security.SecretStore;
-import telegram.files.security.RedactingFormatter;
-
 import java.io.File;
 import java.io.IOException;
 import java.nio.channels.ClosedChannelException;
@@ -25,12 +9,40 @@ import java.util.Base64;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.logging.ConsoleHandler;
+import java.util.logging.FileHandler;
+import java.util.logging.Filter;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 import java.util.stream.Collectors;
-import java.util.logging.*;
+
 import javax.crypto.spec.SecretKeySpec;
+
+import com.openai.models.ChatModel;
+
+import cn.hutool.core.convert.Convert;
+import cn.hutool.core.io.FileUtil;
+import cn.hutool.core.util.ArrayUtil;
+import cn.hutool.core.util.StrUtil;
+import cn.hutool.log.Log;
+import cn.hutool.log.LogFactory;
+import cn.hutool.log.dialect.jdk.JdkLog;
+import io.vertx.core.DeploymentOptions;
+import io.vertx.core.ThreadingModel;
+import telegram.files.security.RedactingFormatter;
+import telegram.files.share.ShareConfiguration;
+import telegram.files.share.TorrentConfiguration;
+import telegram.files.share.security.AesGcmSecretStore;
+import telegram.files.share.security.SecretStore;
 
 public class Config {
     public static final String LOG_LEVEL = StrUtil.blankToDefault(System.getenv("LOG_LEVEL"), "INFO");
+
+    public static final boolean LOG_REDACTION_ENABLED = Convert.toBool(
+            System.getenv("LOG_REDACTION_ENABLED"), true
+    );
 
     public static final String APP_ENV = StrUtil.blankToDefault(System.getenv("APP_ENV"), "prod");
 
@@ -206,7 +218,7 @@ public class Config {
         IgnoreExceptionLogFilter brokenPipeFilter = new IgnoreExceptionLogFilter();
         ConsoleHandler consoleHandler = new ConsoleHandler();
         consoleHandler.setLevel(Level.FINEST);
-        consoleHandler.setFormatter(new RedactingFormatter());
+        consoleHandler.setFormatter(new RedactingFormatter(LOG_REDACTION_ENABLED));
         consoleHandler.setFilter(brokenPipeFilter);
         rootLogger.addHandler(consoleHandler);
 
@@ -215,7 +227,7 @@ public class Config {
 
             FileHandler fileHandler = new FileHandler(logFilePattern, 5000000, 3, true);
             fileHandler.setLevel(Level.FINEST);
-            fileHandler.setFormatter(new RedactingFormatter());
+            fileHandler.setFormatter(new RedactingFormatter(LOG_REDACTION_ENABLED));
             fileHandler.setFilter(brokenPipeFilter);
             rootLogger.addHandler(fileHandler);
         } catch (IOException e) {
