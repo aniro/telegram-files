@@ -101,9 +101,10 @@ public class FileRepositoryImpl extends AbstractSqlRepository implements FileRep
         String whereClause = "type != 'thumbnail'";
         Map<String, Object> params = new HashMap<>();
         params.put("limit", limit);
-        if (chatId != 0) {
+        long targetChatId = chatId != 0 ? chatId : Convert.toLong(filter.get("chatId"), 0L);
+        if (targetChatId != 0) {
             whereClause += " AND chat_id = #{chatId}";
-            params.put("chatId", chatId);
+            params.put("chatId", targetChatId);
         }
         if (telegramId != -1L) {
             whereClause += " AND telegram_id = #{telegramId}";
@@ -261,6 +262,38 @@ public class FileRepositoryImpl extends AbstractSqlRepository implements FileRep
                         .put("downloadedSize", ((Number) row.getValue("downloaded_size")).longValue())
                         .put("latestMessageDate", ((Number) row.getValue("latest_message_date")).longValue()))
                 .execute(Map.of("telegramId", telegramId))
+                .map(rows -> rows.stream().toList());
+    }
+
+    @Override
+    public Future<List<JsonObject>> getCachedChats(Long telegramId) {
+        String whereClause = "WHERE type != 'thumbnail'";
+        Map<String, Object> params = new HashMap<>();
+        if (telegramId != null && telegramId != 0L && telegramId != -1L) {
+            whereClause += " AND telegram_id = #{telegramId}";
+            params.put("telegramId", telegramId);
+        }
+        return SqlTemplate
+                .forQuery(sqlClient, """
+                        SELECT telegram_id,
+                               chat_id,
+                               COUNT(*) AS total_count,
+                               SUM(CASE WHEN download_status = 'completed' THEN 1 ELSE 0 END) AS downloaded_count,
+                               COALESCE(SUM(CASE WHEN download_status = 'completed' THEN size ELSE 0 END), 0) AS downloaded_size,
+                               MAX(date) AS latest_message_date
+                        FROM file_record
+                        %s
+                        GROUP BY telegram_id, chat_id
+                        ORDER BY latest_message_date DESC
+                        """.formatted(whereClause))
+                .mapTo(row -> new JsonObject()
+                        .put("telegramId", Long.toString(((Number) row.getValue("telegram_id")).longValue()))
+                        .put("chatId", Long.toString(((Number) row.getValue("chat_id")).longValue()))
+                        .put("totalCount", ((Number) row.getValue("total_count")).longValue())
+                        .put("downloadedCount", ((Number) row.getValue("downloaded_count")).longValue())
+                        .put("downloadedSize", ((Number) row.getValue("downloaded_size")).longValue())
+                        .put("latestMessageDate", ((Number) row.getValue("latest_message_date")).longValue()))
+                .execute(params)
                 .map(rows -> rows.stream().toList());
     }
 

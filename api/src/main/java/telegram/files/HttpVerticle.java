@@ -19,6 +19,7 @@ import io.vertx.core.http.Cookie;
 import io.vertx.core.http.CookieSameSite;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServerOptions;
+import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.http.ServerWebSocket;
 import io.vertx.core.http.ServerWebSocketHandshake;
@@ -60,6 +61,8 @@ import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 public class HttpVerticle extends AbstractVerticle {
@@ -270,6 +273,7 @@ public class HttpVerticle extends AbstractVerticle {
         router.post("/:telegramId/file/update-auto-settings").handler(this::handleAutoSettingsUpdate);
 
         router.get("/files/count").handler(this::handleFilesCount);
+        router.get("/files/chats").handler(this::handleFilesChats);
         router.get("/files").handler(this::handleFiles);
         router.post("/files/start-download-multiple").handler(this::handleFileStartDownloadMultiple);
         router.post("/files/cancel-download-multiple").handler(this::handleFileCancelDownloadMultiple);
@@ -1787,21 +1791,108 @@ public class HttpVerticle extends AbstractVerticle {
             return;
         }
 
-        telegramVerticle.loadPreview(uniqueId)
-                .onSuccess(tuple -> {
-                    String mimeType = tuple.v2;
+        telegramVerticle.resolveMediaTarget(uniqueId)
+                .onSuccess(target -> {
+                    String mimeType = target.mimeType();
                     if (StrUtil.isBlank(mimeType)) {
-                        mimeType = FileUtil.getMimeType(tuple.v1);
+                        mimeType = "video".equals(target.type()) ? "video/mp4" : "application/octet-stream";
                     }
 
-                    try {
-                        Path allowedFile = resolveAllowedFile(tuple.v1);
-                        fileRouteHandler.handle(ctx, allowedFile.toString(), mimeType);
-                    } catch (IllegalArgumentException exception) {
-                        respondJson(ctx, 403, "FILE_PATH_NOT_ALLOWED", "File is outside an allowed root");
+                    if (target.isCompleted() && StrUtil.isNotBlank(target.localPath()) && FileUtil.exist(target.localPath())) {
+                        try {
+                            Path allowedFile = resolveAllowedFile(target.localPath());
+                            fileRouteHandler.handle(ctx, allowedFile.toString(), mimeType);
+                        } catch (IllegalArgumentException exception) {
+                            respondJson(ctx, 403, "FILE_PATH_NOT_ALLOWED", "File is outside an allowed root");
+                        }
+                        return;
                     }
+
+                    // If thumbnail or photo, fetch on-demand
+                    if ("thumbnail".equals(target.type()) || "photo".equals(target.type())) {
+                        telegramVerticle.fetchMediaPreview(target.fileId(), mimeType, uniqueId)
+                                .onSuccess(tuple -> {
+                                    try {
+                                        Path allowedFile = resolveAllowedFile(tuple.v1);
+                                        fileRouteHandler.handle(ctx, allowedFile.toString(), tuple.v2);
+                                    } catch (IllegalArgumentException exception) {
+                                        respondJson(ctx, 403, "FILE_PATH_NOT_ALLOWED", "File is outside an allowed root");
+                                    }
+                                })
+                                .onFailure(ctx::fail);
+                        return;
+                    }
+
+                    // For video or audio, handle Range streaming via TDLib
+                    handleMediaStream(ctx, telegramVerticle, target, mimeType);
                 })
                 .onFailure(ctx::fail);
+    }
+
+    private void handleMediaStream(RoutingContext ctx, TelegramVerticle tv, TelegramVerticle.MediaTarget target, String mimeType) {
+        HttpServerRequest request = ctx.request();
+        HttpServerResponse response = ctx.response();
+        if (response.closed()) return;
+
+        long totalSize = target.size();
+        String rangeHeader = request.getHeader("Range");
+
+        long start = 0;
+        long end = totalSize > 0 ? totalSize - 1 : 1024 * 1024;
+        boolean isRange = false;
+
+        if (StrUtil.isNotBlank(rangeHeader)) {
+            Matcher matcher = Pattern.compile("^bytes=(\\d*)-(\\d*)$").matcher(rangeHeader);
+            if (matcher.matches()) {
+                isRange = true;
+                String startPart = matcher.group(1);
+                String endPart = matcher.group(2);
+                if (StrUtil.isNotBlank(startPart)) {
+                    start = Convert.toLong(startPart, 0L);
+                }
+                if (StrUtil.isNotBlank(endPart)) {
+                    end = Convert.toLong(endPart, totalSize > 0 ? totalSize - 1 : start + 1024 * 1024);
+                } else if (totalSize > 0) {
+                    end = totalSize - 1;
+                }
+            }
+        }
+
+        if (totalSize > 0 && start >= totalSize) {
+            response.setStatusCode(416)
+                    .putHeader("Content-Range", "bytes */" + totalSize)
+                    .end();
+            return;
+        }
+
+        long maxChunk = 1024 * 1024;
+        long count = Math.min(end - start + 1, maxChunk);
+        long actualEnd = start + count - 1;
+
+        response.putHeader("Accept-Ranges", "bytes");
+        response.putHeader("Content-Type", mimeType);
+
+        long finalStart = start;
+        long finalActualEnd = actualEnd;
+        boolean finalIsRange = isRange;
+
+        tv.readMediaChunk(target.fileId(), start, count)
+                .onSuccess(bytes -> {
+                    if (response.closed()) return;
+                    if (finalIsRange || totalSize > 0) {
+                        response.setStatusCode(206);
+                        String contentRange = "bytes " + finalStart + "-" + (finalStart + bytes.length - 1) + "/" + (totalSize > 0 ? totalSize : "*");
+                        response.putHeader("Content-Range", contentRange);
+                    }
+                    response.putHeader("Content-Length", String.valueOf(bytes.length));
+                    response.end(Buffer.buffer(bytes));
+                })
+                .onFailure(err -> {
+                    if (!response.closed()) {
+                        log.warn("Media streaming chunk error for fileId={}: {}", target.fileId(), err.getMessage());
+                        response.setStatusCode(500).end(JsonObject.of("error", err.getMessage()).encode());
+                    }
+                });
     }
 
     private static Path resolveAllowedFile(String rawPath) {
@@ -2168,6 +2259,44 @@ public class HttpVerticle extends AbstractVerticle {
                             : configuredLimit);
                     ctx.json(statistics);
                 })
+                .onFailure(ctx::fail);
+    }
+
+    private void handleFilesChats(RoutingContext ctx) {
+        String telegramIdParam = ctx.request().getParam("telegramId");
+        Long telegramId = StrUtil.isNotBlank(telegramIdParam) ? Convert.toLong(telegramIdParam, null) : null;
+        DataVerticle.fileRepository.getCachedChats(telegramId)
+                .map(list -> {
+                    List<JsonObject> result = new ArrayList<>();
+                    for (JsonObject item : list) {
+                        long tId = Convert.toLong(item.getString("telegramId"), 0L);
+                        long cId = Convert.toLong(item.getString("chatId"), 0L);
+                        JsonObject chatJson = new JsonObject()
+                                .put("id", Convert.toStr(cId))
+                                .put("telegramId", Convert.toStr(tId))
+                                .put("type", "channel")
+                                .put("totalCount", item.getLong("totalCount", 0L))
+                                .put("downloadedCount", item.getLong("downloadedCount", 0L))
+                                .put("downloadedSize", item.getLong("downloadedSize", 0L));
+
+                        Optional<TelegramVerticle> tvOpt = TelegramVerticles.get(tId);
+                        if (tvOpt.isPresent()) {
+                            TdApi.Chat chat = tvOpt.get().getChat(cId);
+                            if (chat != null) {
+                                chatJson.put("name", chat.id == tId ? "Saved Messages" : chat.title)
+                                        .put("type", TdApiHelp.getChatType(chat.type))
+                                        .put("avatar", minithumbnail(chat))
+                                        .put("unreadCount", chat.unreadCount);
+                            }
+                        }
+                        if (!chatJson.containsKey("name") || StrUtil.isBlank(chatJson.getString("name"))) {
+                            chatJson.put("name", "Chat " + cId);
+                        }
+                        result.add(chatJson);
+                    }
+                    return new JsonArray(result);
+                })
+                .onSuccess(ctx::json)
                 .onFailure(ctx::fail);
     }
 

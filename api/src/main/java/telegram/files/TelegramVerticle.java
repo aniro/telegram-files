@@ -69,11 +69,17 @@ public class TelegramVerticle extends AbstractVerticle {
 
     private final Map<Integer, Long> fileLastEventTimes = new ConcurrentHashMap<>();
 
-    public record OnlineFileInfo(int fileId, String type, String mimeType) {}
+    public record OnlineFileInfo(int fileId, String type, String mimeType, long size) {}
+
+    public record MediaTarget(int fileId, String type, String mimeType, long size, String localPath, boolean isCompleted) {}
+
+    public record PendingChunkRead(long offset, long count, Promise<byte[]> promise) {}
 
     private final Map<String, OnlineFileInfo> onlineFilesCache = new ConcurrentHashMap<>();
 
     private final Map<Integer, List<Promise<String>>> pendingPreviewPromises = new ConcurrentHashMap<>();
+
+    private final Map<Integer, List<PendingChunkRead>> pendingChunkReads = new ConcurrentHashMap<>();
 
     private long lastFileDownloadEventTime;
 
@@ -429,13 +435,32 @@ public class TelegramVerticle extends AbstractVerticle {
             TdApiHelp.getFileHandler(message).ifPresent(handler -> {
                 TdApi.File file = handler.getFile();
                 if (file != null && file.remote != null && StrUtil.isNotBlank(file.remote.uniqueId)) {
-                    String type = handler instanceof TdApiHelp.PhotoHandler ? "photo" : "file";
-                    String mimeType = "photo".equals(type) ? "image/jpeg" : null;
-                    onlineFilesCache.put(file.remote.uniqueId, new OnlineFileInfo(file.id, type, mimeType));
+                    String type = "file";
+                    String mimeType = null;
+                    if (handler instanceof TdApiHelp.PhotoHandler) {
+                        type = "photo";
+                        mimeType = "image/jpeg";
+                    } else if (handler instanceof TdApiHelp.VideoHandler vh) {
+                        type = "video";
+                        if (vh.getContent() != null && vh.getContent().video != null) {
+                            mimeType = vh.getContent().video.mimeType;
+                        }
+                        if (StrUtil.isBlank(mimeType)) {
+                            mimeType = "video/mp4";
+                        }
+                    } else if (handler instanceof TdApiHelp.AudioHandler ah) {
+                        type = "audio";
+                        if (ah.getContent() != null && ah.getContent().audio != null) {
+                            mimeType = ah.getContent().audio.mimeType;
+                        }
+                    }
+                    long size = file.size > 0 ? file.size : file.expectedSize;
+                    onlineFilesCache.put(file.remote.uniqueId, new OnlineFileInfo(file.id, type, mimeType, size));
                 }
                 TdApi.Thumbnail thumb = handler.getThumbnail();
                 if (thumb != null && thumb.file != null && thumb.file.remote != null && StrUtil.isNotBlank(thumb.file.remote.uniqueId)) {
-                    onlineFilesCache.put(thumb.file.remote.uniqueId, new OnlineFileInfo(thumb.file.id, "thumbnail", TdApiHelp.getThumbnailMimeType(thumb.format)));
+                    long thumbSize = thumb.file.size > 0 ? thumb.file.size : thumb.file.expectedSize;
+                    onlineFilesCache.put(thumb.file.remote.uniqueId, new OnlineFileInfo(thumb.file.id, "thumbnail", TdApiHelp.getThumbnailMimeType(thumb.format), thumbSize));
                 }
             });
         }
@@ -548,7 +573,74 @@ public class TelegramVerticle extends AbstractVerticle {
                 });
     }
 
-    private Future<Tuple2<String, String>> fetchMediaPreview(int fileId, String mimeType, String uniqueId) {
+    public Future<MediaTarget> resolveMediaTarget(String uniqueId) {
+        return DataVerticle.fileRepository
+                .getByUniqueId(uniqueId)
+                .compose(fileRecord -> {
+                    if (fileRecord != null) {
+                        boolean exists = StrUtil.isNotBlank(fileRecord.localPath()) && FileUtil.exist(fileRecord.localPath());
+                        return Future.succeededFuture(new MediaTarget(
+                                fileRecord.id(),
+                                fileRecord.type(),
+                                fileRecord.mimeType(),
+                                fileRecord.size(),
+                                fileRecord.localPath(),
+                                exists
+                        ));
+                    }
+
+                    OnlineFileInfo onlineInfo = onlineFilesCache.get(uniqueId);
+                    if (onlineInfo != null) {
+                        return client.execute(new TdApi.GetFile(onlineInfo.fileId()))
+                                .map(tdFile -> {
+                                    boolean exists = tdFile.local != null && tdFile.local.isDownloadingCompleted
+                                            && StrUtil.isNotBlank(tdFile.local.path) && FileUtil.exist(tdFile.local.path);
+                                    long size = tdFile.size > 0 ? tdFile.size : (tdFile.expectedSize > 0 ? tdFile.expectedSize : onlineInfo.size());
+                                    return new MediaTarget(
+                                            onlineInfo.fileId(),
+                                            onlineInfo.type(),
+                                            onlineInfo.mimeType(),
+                                            size,
+                                            tdFile.local != null ? tdFile.local.path : null,
+                                            exists
+                                    );
+                                })
+                                .recover(_ -> Future.succeededFuture(new MediaTarget(
+                                        onlineInfo.fileId(),
+                                        onlineInfo.type(),
+                                        onlineInfo.mimeType(),
+                                        onlineInfo.size(),
+                                        null,
+                                        false
+                                )));
+                    }
+
+                    return Future.failedFuture("File not found");
+                });
+    }
+
+    public Future<byte[]> readMediaChunk(int fileId, long offset, long count) {
+        long readCount = Math.min(count, 1024 * 1024);
+        return client.execute(new TdApi.ReadFilePart(fileId, offset, readCount))
+                .map(data -> data.data)
+                .recover(err -> {
+                    client.execute(new TdApi.DownloadFile(fileId, 32, offset, Math.max(readCount * 4, 4 * 1024 * 1024), false));
+
+                    Promise<byte[]> promise = Promise.promise();
+                    PendingChunkRead pending = new PendingChunkRead(offset, readCount, promise);
+                    List<PendingChunkRead> list = pendingChunkReads.computeIfAbsent(fileId, _ -> new java.util.concurrent.CopyOnWriteArrayList<>());
+                    list.add(pending);
+
+                    long timerId = vertx.setTimer(15000, _ -> {
+                        list.remove(pending);
+                        promise.tryFail("Read chunk timeout: offset=" + offset);
+                    });
+
+                    return promise.future().onComplete(_ -> vertx.cancelTimer(timerId));
+                });
+    }
+
+    public Future<Tuple2<String, String>> fetchMediaPreview(int fileId, String mimeType, String uniqueId) {
         return client.execute(new TdApi.DownloadFile(fileId, 32, 0, 0, false))
                 .compose(file -> {
                     if (file.local != null && StrUtil.isNotBlank(file.local.path) && FileUtil.exist(file.local.path)) {
@@ -1726,6 +1818,17 @@ public class TelegramVerticle extends AbstractVerticle {
                     for (Promise<String> p : promises) {
                         p.tryComplete(file.local.path);
                     }
+                }
+            }
+            List<PendingChunkRead> chunkReads = pendingChunkReads.get(file.id);
+            if (chunkReads != null && !chunkReads.isEmpty()) {
+                for (PendingChunkRead pending : chunkReads) {
+                    client.execute(new TdApi.ReadFilePart(file.id, pending.offset(), pending.count()))
+                            .onSuccess(data -> {
+                                if (chunkReads.remove(pending)) {
+                                    pending.promise().tryComplete(data.data);
+                                }
+                            });
                 }
             }
             enqueueFileStatusUpdate(file);

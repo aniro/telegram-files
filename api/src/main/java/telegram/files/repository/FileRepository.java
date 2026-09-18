@@ -17,6 +17,8 @@ public interface FileRepository {
 
     Future<List<JsonObject>> listLocalSources(long telegramId, boolean eligibleOnly);
 
+    Future<List<JsonObject>> getCachedChats(Long telegramId);
+
     Future<Map<String, FileRecord>> getFilesByUniqueId(List<String> uniqueIds);
 
     Future<FileRecord> getByPrimaryKey(int fileId, String uniqueId);
