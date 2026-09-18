@@ -1,11 +1,11 @@
 package telegram.files.security;
 
-import org.junit.jupiter.api.Test;
-
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.jupiter.api.Test;
 
 class SensitiveDataRedactorTest {
 
@@ -33,5 +33,16 @@ class SensitiveDataRedactorTest {
 
         assertFalse(output.contains("secret-value"));
         assertFalse(output.contains("another-secret"));
+    }
+
+    @Test
+    void disablingNonCriticalRedactionStillProtectsCredentials() {
+        String input = "token=secret-value chatId=-10042 path=/Users/example/private.bin";
+
+        String output = SensitiveDataRedactor.redact(input, false);
+
+        assertFalse(output.contains("secret-value"));
+        assertTrue(output.contains("chatId=-10042"));
+        assertTrue(output.contains("/Users/example/private.bin"));
     }
 }
