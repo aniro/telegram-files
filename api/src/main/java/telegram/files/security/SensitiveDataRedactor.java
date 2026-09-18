@@ -20,10 +20,17 @@ public final class SensitiveDataRedactor {
     }
 
     public static String redact(String value) {
+        return redact(value, true);
+    }
+
+    public static String redact(String value, boolean redactNonCritical) {
         if (value == null || value.isEmpty()) {
             return value;
         }
         String redacted = KEY_VALUE.matcher(value).replaceAll("$1$2[REDACTED]");
+        if (!redactNonCritical) {
+            return redacted;
+        }
         redacted = PRIVATE_LOCATOR.matcher(redacted).replaceAll("$1$2[REDACTED]");
         return LOCAL_PATH.matcher(redacted).replaceAll("[LOCAL_PATH]");
     }
