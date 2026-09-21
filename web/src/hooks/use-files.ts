@@ -112,6 +112,7 @@ export function useFiles(
       ...(filters.sizeUnit && { sizeUnit: filters.sizeUnit }),
       ...(filters.sort && { sort: filters.sort }),
       ...(filters.order && { order: filters.order }),
+      ...(filters.chatId && { chatId: filters.chatId }),
       limit: "60",
     });
 

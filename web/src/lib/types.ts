@@ -164,6 +164,7 @@ export type FileFilter = {
   sizeUnit?: "KB" | "MB" | "GB";
   sort?: SortFields;
   order?: "asc" | "desc";
+  chatId?: string;
 };
 
 export type TelegramApiResult = {

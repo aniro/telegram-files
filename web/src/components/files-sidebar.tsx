@@ -10,12 +10,12 @@ import { Input } from "@/components/ui/input";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
 import {
-  Archive,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Film,
   Folder,
+  Globe,
   HardDrive,
   ImageIcon,
   Layers,
@@ -41,27 +41,55 @@ export default function FilesSidebar({
   const { t } = useLanguage();
   const router = useRouter();
   const chatContext = useMaybeTelegramChat();
-  const { accountId: currentAccountId } = useTelegramAccount();
+  const { accountId: currentAccountId, getAccounts } = useTelegramAccount();
+  const activeAccountId =
+    currentAccountId ||
+    getAccounts("active")[0]?.id ||
+    getAccounts()[0]?.id;
 
-  // Safely fetch fallback channels if not inside TelegramChatProvider
-  const { data: fallbackChats, isLoading: isFallbackLoading } = useSWR<
-    TelegramChat[]
-  >(
-    !chatContext && currentAccountId
-      ? `/telegram/${currentAccountId}/chats`
+  const [channelMode, setChannelMode] = useState<"cached" | "online">("cached");
+
+  // Fetch online channels for active account
+  const { data: onlineChats, isLoading: isOnlineLoading } = useSWR<TelegramChat[]>(
+    !chatContext && activeAccountId && channelMode === "online"
+      ? `/telegram/${activeAccountId}/chats`
       : null,
   );
 
-  const chats = chatContext?.chats ?? fallbackChats ?? [];
-  const selectedChatId = chatContext?.chatId;
-  const isLoading = chatContext ? chatContext.isLoading : isFallbackLoading;
+  // Fetch locally cached / downloaded channels from database
+  const { data: cachedChats, isLoading: isCachedLoading } = useSWR<
+    (TelegramChat & { downloadedCount?: number; totalCount?: number })[]
+  >(
+    !chatContext && channelMode === "cached"
+      ? `/files/chats`
+      : null,
+  );
+
+  const chats = useMemo(() => {
+    if (chatContext) return chatContext.chats;
+    return channelMode === "online" ? (onlineChats ?? []) : (cachedChats ?? []);
+  }, [chatContext, channelMode, onlineChats, cachedChats]);
+
+  const selectedChatId = chatContext ? chatContext.chatId : filters.chatId;
+  const isLoading = chatContext
+    ? chatContext.isLoading
+    : channelMode === "online"
+      ? isOnlineLoading
+      : isCachedLoading;
   const [search, setSearch] = useState("");
 
   const handleChatSelect = (targetChatId: string) => {
     if (chatContext) {
       chatContext.handleChatChange(targetChatId);
-    } else if (currentAccountId && targetChatId) {
-      router.push(`/accounts?id=${currentAccountId}&chatId=${targetChatId}`);
+    } else if (channelMode === "online") {
+      if (activeAccountId && targetChatId) {
+        router.push(`/accounts?id=${activeAccountId}&chatId=${targetChatId}`);
+      }
+    } else {
+      onFiltersChange({
+        ...filters,
+        chatId: filters.chatId === targetChatId ? undefined : targetChatId,
+      });
     }
   };
 
@@ -224,9 +252,43 @@ export default function FilesSidebar({
 
       {/* Channel Header & Filter */}
       <div className="flex flex-col gap-2">
+        {!chatContext && (
+          <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted/60 p-1 text-xs">
+            <button
+              type="button"
+              onClick={() => setChannelMode("cached")}
+              className={cn(
+                "flex items-center justify-center gap-1.5 rounded-md py-1 font-medium transition",
+                channelMode === "cached"
+                  ? "bg-background text-foreground shadow-xs"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <HardDrive className="size-3" />
+              <span>{t("Local / Cached") || "本地缓存"}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setChannelMode("online")}
+              className={cn(
+                "flex items-center justify-center gap-1.5 rounded-md py-1 font-medium transition",
+                channelMode === "online"
+                  ? "bg-background text-foreground shadow-xs"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <Globe className="size-3" />
+              <span>{t("Online") || "在线频道"}</span>
+            </button>
+          </div>
+        )}
+
         <div className="flex items-center justify-between px-1">
           <span className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
-            {t("Channels")} ({chats?.length ?? 0})
+            {channelMode === "online"
+              ? t("Online Channels") || "在线频道"
+              : t("Local Channels") || "本地频道"}{" "}
+            ({chats?.length ?? 0})
           </span>
           {selectedChatId && (
             <button
@@ -242,7 +304,11 @@ export default function FilesSidebar({
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder={t("Search channels...")}
+            placeholder={
+              channelMode === "online"
+                ? t("Search online channels...") || "搜索在线频道..."
+                : t("Search cached channels...") || "搜索本地缓存频道..."
+            }
             className="h-8 pl-7 text-xs"
           />
         </div>
@@ -257,11 +323,14 @@ export default function FilesSidebar({
             </div>
           ) : filteredChats.length === 0 ? (
             <div className="py-6 text-center text-xs text-muted-foreground">
-              {t("No channels found")}
+              {channelMode === "online"
+                ? t("No online channels found") || "未找到在线频道"
+                : t("No cached channels found") || "暂无本地缓存频道"}
             </div>
           ) : (
             filteredChats.map((c) => {
               const isSelected = selectedChatId === c.id;
+              const downloadedCount = (c as { downloadedCount?: number }).downloadedCount;
               return (
                 <button
                   key={c.id}
@@ -286,6 +355,18 @@ export default function FilesSidebar({
                       {c.name || `Chat ${c.id}`}
                     </div>
                   </div>
+                  {channelMode === "cached" && downloadedCount !== undefined && (
+                    <span
+                      className={cn(
+                        "shrink-0 rounded px-1.5 py-0.5 text-[10px]",
+                        isSelected
+                          ? "bg-primary-foreground/20 text-primary-foreground"
+                          : "bg-muted text-muted-foreground",
+                      )}
+                    >
+                      {downloadedCount}
+                    </span>
+                  )}
                 </button>
               );
             })
